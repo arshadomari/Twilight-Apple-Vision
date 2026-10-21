@@ -109,7 +109,10 @@ public final class StreamSession {
         config.audioConfiguration = settings.audio.audioConfiguration
         config.supportedVideoFormats = try supportedVideoFormats(serverCodecSupport: info.serverCodecModeSupport)
         config.clientRefreshRateX100 = Int32(settings.fps * 100)
-        config.colorSpace = settings.enableHdr ? Int32(COLORSPACE_REC_2020) : Int32(COLORSPACE_REC_709)
+        // Always ask for Rec. 709, like Twilight. The host switches to HDR (BT.2020 PQ, signalled in
+        // the bitstream) only while its display is actually in HDR; asking for Rec. 2020 here made
+        // hosts without HDR send SDR video in wide-gamut colour, which looked washed out.
+        config.colorSpace = Int32(COLORSPACE_REC_709)
         config.colorRange = Int32(COLOR_RANGE_LIMITED)
         config.encryptionFlags = Int32(bitPattern: ENCFLG_ALL)
 
