@@ -65,7 +65,7 @@ private struct StreamContent: View {
                                streamAspect: aspect, onPointer: handlePointer)
 
                 if showStats, case .streaming = session.state {
-                    StatsHUD(stats: session.stats, poor: session.connectionPoor)
+                    StatsHUD(stats: session.stats, poor: session.connectionPoor, hostHdr: session.hostHdrActive)
                         .padding(24)
                 }
 
@@ -289,10 +289,12 @@ private struct StreamContent: View {
 private struct StatsHUD: View {
     let stats: StreamStats
     let poor: Bool
+    let hostHdr: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(stats.width)×\(stats.height) · \(stats.codec)")
+            Text("Colour: \(stats.colorDescription.isEmpty ? "–" : stats.colorDescription) · Host HDR \(hostHdr ? "on" : "off")")
             Text(String(format: "%.0f FPS · %.1f Mbps", stats.receivedFps, stats.bitrateMbps))
             Text("Network \(stats.rttMs) ms ± \(stats.rttVarianceMs) · Host \(String(format: "%.1f", stats.hostLatencyMs)) ms")
             Text("Dropped frames: \(stats.droppedFrames) · Client \(String(format: "%.2f", stats.frameProcessingMs)) ms/frame")

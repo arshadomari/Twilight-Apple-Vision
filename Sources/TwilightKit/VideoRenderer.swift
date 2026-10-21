@@ -15,6 +15,8 @@ public struct StreamStats: Sendable {
     public var codec: String = ""
     /// Average time the client spends preparing each frame for the decoder.
     public var frameProcessingMs: Double = 0
+    /// Colour details from the stream itself, e.g. "10-bit · BT.2020 · PQ (HDR)".
+    public var colorDescription: String = ""
     public var width: Int = 0
     public var height: Int = 0
 }
@@ -138,6 +140,14 @@ public final class VideoRenderer: @unchecked Sendable {
 
         if du.frameType == Int32(FRAME_TYPE_IDR) && (parameterSetsChanged || formatDescription == nil) {
             formatDescription = makeFormatDescription(hevc: isHevc)
+            if let formatDescription {
+                let description = Self.describeColor(formatDescription)
+                statsLock.lock()
+                stats.colorDescription = description
+                statsLock.unlock()
+                TwilightLog.info("Video colour: \(description)")
+                setDynamicRange(hdr: Self.isHDR(formatDescription))
+            }
             if formatDescription == nil {
                 TwilightLog.error("Unable to create video format description")
                 return Int32(DR_NEED_IDR)
@@ -276,6 +286,51 @@ public final class VideoRenderer: @unchecked Sendable {
             windowHostLatencySamples = 0
             windowProcessingTime = 0
         }
+    }
+
+    /// Lets HDR frames use the display's extra brightness. visionOS otherwise tone-maps the layer
+    /// to standard range (the default since visionOS 26), which makes HDR streams look dim.
+    /// Standard range is kept for SDR streams, since HDR mode costs power.
+    private func setDynamicRange(hdr: Bool) {
+        guard #available(visionOS 26.0, iOS 26.0, macOS 26.0, *) else { return }
+        DispatchQueue.main.async { [displayLayer] in
+            let range: CALayer.DynamicRange = hdr ? .high : .standard
+            if displayLayer.preferredDynamicRange != range {
+                displayLayer.preferredDynamicRange = range
+                TwilightLog.info("Video layer dynamic range: \(hdr ? "high (HDR)" : "standard")")
+            }
+        }
+    }
+
+    static func isHDR(_ description: CMFormatDescription) -> Bool {
+        let transfer = CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+        return transfer == String(kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ)
+            || transfer == String(kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG)
+    }
+
+    /// Summarises the colour signalling VideoToolbox read from the stream's parameter sets.
+    static func describeColor(_ description: CMFormatDescription) -> String {
+        func ext(_ key: CFString) -> String? {
+            CMFormatDescriptionGetExtension(description, extensionKey: key) as? String
+        }
+        let depth = (CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_BitsPerComponent) as? NSNumber)?.intValue
+        let primaries: String
+        switch ext(kCMFormatDescriptionExtension_ColorPrimaries) {
+        case String(kCMFormatDescriptionColorPrimaries_ITU_R_2020): primaries = "BT.2020"
+        case String(kCMFormatDescriptionColorPrimaries_ITU_R_709_2): primaries = "BT.709"
+        case let other?: primaries = other
+        case nil: primaries = "untagged primaries"
+        }
+        let transfer: String
+        switch ext(kCMFormatDescriptionExtension_TransferFunction) {
+        case String(kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ): transfer = "PQ (HDR)"
+        case String(kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG): transfer = "HLG (HDR)"
+        case String(kCMFormatDescriptionTransferFunction_ITU_R_709_2): transfer = "BT.709 (SDR)"
+        case let other?: transfer = other
+        case nil: transfer = "untagged transfer"
+        }
+        let range = (CMFormatDescriptionGetExtension(description, extensionKey: kCMFormatDescriptionExtension_FullRangeVideo) as? Bool) == true ? "full" : "limited"
+        return [depth.map { "\($0)-bit" }, primaries, transfer, "\(range) range"].compactMap { $0 }.joined(separator: " · ")
     }
 
     static func codecName(_ format: Int32) -> String {

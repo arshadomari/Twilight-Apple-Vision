@@ -36,6 +36,8 @@ public final class StreamSession {
     public private(set) var state: StreamState = .idle
     public private(set) var stats = StreamStats()
     public private(set) var connectionPoor = false
+    /// Whether the host says its display is in HDR mode (ConnListenerSetHdrMode).
+    public private(set) var hostHdrActive = false
 
     public let video = VideoRenderer()
     public let input = InputManager()
@@ -245,6 +247,11 @@ public final class StreamSession {
         Task { await stop() }
     }
 
+    func handleHdrMode(_ enabled: Bool) {
+        hostHdrActive = enabled
+        TwilightLog.info("Host HDR mode: \(enabled ? "on" : "off")")
+    }
+
     func handleConnectionStatus(_ status: Int32) {
         connectionPoor = status == Int32(CONN_STATUS_POOR)
     }
@@ -292,6 +299,9 @@ enum StreamCallbacks {
         }
         cb.connectionTerminated = { code in
             DispatchQueue.main.async { StreamCallbacks.session?.handleTerminated(code) }
+        }
+        cb.setHdrMode = { enabled in
+            DispatchQueue.main.async { StreamCallbacks.session?.handleHdrMode(enabled) }
         }
         cb.connectionStatusUpdate = { status in
             DispatchQueue.main.async { StreamCallbacks.session?.handleConnectionStatus(status) }
