@@ -1,0 +1,9 @@
+[submodule "Vendor/moonlight-common-c"]
+	path = Vendor/moonlight-common-c
+	url = https://github.com/andygrundman/moonlight-common-c.git
+[submodule "Vendor/mbedtls"]
+	path = Vendor/mbedtls
+	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "Vendor/opus"]
+	path = Vendor/opus
+	url = https://github.com/xiph/opus.git
