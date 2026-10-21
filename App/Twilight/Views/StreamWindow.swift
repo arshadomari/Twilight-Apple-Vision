@@ -48,6 +48,12 @@ private struct StreamContent: View {
         _showStats = State(initialValue: settings.showPerformanceOverlay)
     }
 
+    /// Height of the black margin under the video, as a fraction of the video's height.
+    /// visionOS reserves the window's bottom edge for its own controls, which swallowed pinches
+    /// on the host's taskbar. The margin moves that edge off the picture, and pinches in the
+    /// margin count as the bottom row of the screen.
+    static let bottomMarginFraction: CGFloat = 0.025
+
     private var aspect: CGFloat {
         CGFloat(settings.width) / CGFloat(settings.height)
     }
@@ -55,7 +61,8 @@ private struct StreamContent: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .topLeading) {
-                VideoLayerView(layer: session.video.displayLayer, onPointer: handlePointer)
+                VideoLayerView(layer: session.video.displayLayer, bottomMarginFraction: Self.bottomMarginFraction,
+                               streamAspect: aspect, onPointer: handlePointer)
 
                 if showStats, case .streaming = session.state {
                     StatsHUD(stats: session.stats, poor: session.connectionPoor)
@@ -73,10 +80,11 @@ private struct StreamContent: View {
                 statusOverlay
             }
         }
-        .aspectRatio(aspect, contentMode: .fit)
-        .frame(minWidth: 640, idealWidth: 1920, maxWidth: 7680, minHeight: 360, idealHeight: 1080, maxHeight: 4320)
         .background(.black)
         .clipShape(.rect(cornerRadius: 24))
+        // The window itself is sized to this shape (see LayerHostView.applyWindowShape); if it's
+        // ever briefly off, the leftover space stays transparent rather than showing black bars.
+        .aspectRatio(aspect / (1 + Self.bottomMarginFraction), contentMode: .fit)
         .preferredSurroundingsEffect(settings.dimSurroundings && session.state == .streaming ? .systemDark : nil)
         .persistentSystemOverlays(.hidden)
         .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
@@ -365,6 +373,9 @@ enum PointerEvent {
 /// visionOS's indirect pinch as touches on the view under the user's gaze.
 struct VideoLayerView: UIViewRepresentable {
     let layer: AVSampleBufferDisplayLayer
+    var bottomMarginFraction: CGFloat = 0
+    /// The stream's width / height, used to give the window the stream's shape.
+    var streamAspect: CGFloat = 16.0 / 9.0
     var onPointer: (PointerEvent) -> Void
 
     func makeUIView(context: Context) -> LayerHostView {
@@ -373,6 +384,8 @@ struct VideoLayerView: UIViewRepresentable {
         view.isUserInteractionEnabled = true
         view.isMultipleTouchEnabled = false
         view.hostedLayer = layer
+        view.bottomMarginFraction = bottomMarginFraction
+        view.streamAspect = streamAspect
         view.onPointer = onPointer
         view.addGestureRecognizer(UIHoverGestureRecognizer(target: view, action: #selector(LayerHostView.hover(_:))))
         // By default visionOS turns game controller input into pinches and scrolling for whatever
@@ -386,12 +399,48 @@ struct VideoLayerView: UIViewRepresentable {
 
     func updateUIView(_ uiView: LayerHostView, context: Context) {
         uiView.hostedLayer = layer
+        uiView.bottomMarginFraction = bottomMarginFraction
+        uiView.streamAspect = streamAspect
         uiView.onPointer = onPointer
+        uiView.applyWindowShape()
     }
 
     final class LayerHostView: UIView {
         var onPointer: ((PointerEvent) -> Void)?
+        var bottomMarginFraction: CGFloat = 0 {
+            didSet { if oldValue != bottomMarginFraction { setNeedsLayout() } }
+        }
+        var streamAspect: CGFloat = 16.0 / 9.0
         private weak var activeTouch: UITouch?
+        private var appliedShape: CGFloat = 0
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            appliedShape = 0
+            applyWindowShape()
+        }
+
+        /// Sizes the window to the stream's shape plus the bottom margin, and locks its proportions
+        /// so resizing never adds bars. (The window otherwise takes the library window's proportions
+        /// when it replaces it.)
+        func applyWindowShape() {
+            let shape = streamAspect / (1 + bottomMarginFraction)
+            guard shape > 0, shape != appliedShape, let window, let scene = window.windowScene else { return }
+            appliedShape = shape
+            let width = max(window.bounds.width, 1920)
+            let preferences = UIWindowScene.GeometryPreferences.Vision(
+                size: CGSize(width: width, height: (width / shape).rounded()),
+                minimumSize: nil, maximumSize: nil, resizingRestrictions: .uniform)
+            scene.requestGeometryUpdate(preferences) { error in
+                TwilightLog.error("Stream window resize was refused: \(error.localizedDescription)")
+            }
+        }
+
+        /// The part of the view showing video; the rest is the bottom margin. Pointer events are
+        /// reported against this size, so points in the margin clamp to the bottom row.
+        private var videoSize: CGSize {
+            CGSize(width: bounds.width, height: bounds.height / (1 + bottomMarginFraction))
+        }
 
         var hostedLayer: CALayer? {
             didSet {
@@ -406,25 +455,25 @@ struct VideoLayerView: UIViewRepresentable {
             super.layoutSubviews()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            hostedLayer?.frame = bounds
+            hostedLayer?.frame = CGRect(origin: .zero, size: videoSize)
             CATransaction.commit()
         }
 
         override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
             guard activeTouch == nil, let touch = touches.first else { return }
             activeTouch = touch
-            onPointer?(.down(touch.location(in: self), bounds.size))
+            onPointer?(.down(touch.location(in: self), videoSize))
         }
 
         override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
             guard let touch = activeTouch, touches.contains(touch) else { return }
-            onPointer?(.moved(touch.location(in: self), bounds.size))
+            onPointer?(.moved(touch.location(in: self), videoSize))
         }
 
         override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
             guard let touch = activeTouch, touches.contains(touch) else { return }
             activeTouch = nil
-            onPointer?(.up(touch.location(in: self), bounds.size))
+            onPointer?(.up(touch.location(in: self), videoSize))
         }
 
         override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -434,7 +483,7 @@ struct VideoLayerView: UIViewRepresentable {
         @objc func hover(_ recognizer: UIHoverGestureRecognizer) {
             switch recognizer.state {
             case .began, .changed:
-                onPointer?(.hover(recognizer.location(in: self), bounds.size))
+                onPointer?(.hover(recognizer.location(in: self), videoSize))
             default:
                 break
             }

@@ -18,8 +18,7 @@ struct TwilightApp: App {
                 .environment(model)
         }
         .windowStyle(.plain)
-        .defaultSize(width: 1920, height: 1080)
-        .windowResizability(.contentSize)
+        .defaultSize(width: 1920, height: 1080 * 1.025)
     }
 }
 
