@@ -41,6 +41,27 @@ ConnListenerLogMessage TwLogMessageCallback(void);
 // Returns the number of bytes written (or needed).
 size_t TwAnnexBToLengthPrefixed(const uint8_t* in, size_t len, uint8_t* out);
 
+// AV1 stream details read from a sequence header OBU.
+typedef struct {
+    int width;
+    int height;
+    int bitDepth;
+    int colorPrimaries;          // ITU-T H.273 code points (2 = unspecified)
+    int transferCharacteristics;
+    int matrixCoefficients;
+    bool fullRange;
+} TwAV1Info;
+
+// Finds the sequence header OBU in an AV1 temporal unit, fills `info`, and writes an ISO-BMFF
+// 'av1C' configuration record (header plus the sequence header OBU) into `av1c`.
+// Returns the av1C length, 0 if the temporal unit has no sequence header, or -1 if it is malformed
+// or `av1cCap` is too small.
+int TwAV1ParseSequenceHeader(const uint8_t* data, size_t len, TwAV1Info* info, uint8_t* av1c, size_t av1cCap);
+
+// Copies an AV1 temporal unit without its temporal delimiter OBUs, which must not appear
+// inside a sample. Pass out = NULL to get the size needed. Returns bytes written (or needed).
+size_t TwAV1StripTemporalDelimiters(const uint8_t* data, size_t len, uint8_t* out);
+
 // MARK: - Crypto
 
 // Must be called once before any other crypto function. Returns 0 on success.

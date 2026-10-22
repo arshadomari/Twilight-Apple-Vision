@@ -28,9 +28,18 @@ struct SettingsView: View {
                         }
                     }
                     Picker("Codec", selection: $model.settings.codec) {
-                        ForEach(VideoCodecPreference.allCases) { Text($0.label).tag($0) }
+                        ForEach(VideoCodecPreference.allCases) { codec in
+                            if codec != .av1 || VideoCodecPreference.av1Available {
+                                Text(codec.label).tag(codec)
+                            }
+                        }
                     }
-                    Toggle("HDR (HEVC Main10)", isOn: $model.settings.enableHdr)
+                    if model.settings.codec == .av1 {
+                        Text("AV1 needs a GPU with an AV1 encoder on the host (GeForce RTX 40 or newer, Radeon RX 7000 or newer, Intel Arc). Otherwise the stream uses HEVC.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Toggle("HDR (10-bit)", isOn: $model.settings.enableHdr)
                 }
 
                 Section {

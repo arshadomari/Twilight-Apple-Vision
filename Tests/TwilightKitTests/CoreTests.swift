@@ -1,4 +1,6 @@
 import XCTest
+import CoreMedia
+import TwilightKitC
 @testable import TwilightKit
 
 final class CryptoTests: XCTestCase {
@@ -162,5 +164,115 @@ final class HTTPTests: XCTestCase {
             XCTAssertTrue(GameStreamHTTP.isTransient(error), "\(error)")
         }
         XCTAssertLessThan(Date().timeIntervalSince(start), 10)
+    }
+}
+
+final class AV1Tests: XCTestCase {
+    /// Writes values MSB-first, as AV1's f(n) descriptor reads them.
+    private struct BitWriter {
+        var bytes: [UInt8] = []
+        var bitCount = 0
+        mutating func write(_ value: UInt32, _ bits: Int) {
+            for i in stride(from: bits - 1, through: 0, by: -1) {
+                if bitCount % 8 == 0 { bytes.append(0) }
+                if (value >> UInt32(i)) & 1 == 1 { bytes[bytes.count - 1] |= UInt8(0x80 >> (bitCount % 8)) }
+                bitCount += 1
+            }
+        }
+    }
+
+    /// A Main-profile sequence header: 2560x1440, 10-bit, BT.2020 PQ (HDR), limited range, level 13.
+    private func sequenceHeaderOBU() -> [UInt8] {
+        var w = BitWriter()
+        w.write(0, 3)        // seq_profile
+        w.write(0, 1)        // still_picture
+        w.write(0, 1)        // reduced_still_picture_header
+        w.write(0, 1)        // timing_info_present_flag
+        w.write(0, 1)        // initial_display_delay_present_flag
+        w.write(0, 5)        // operating_points_cnt_minus_1
+        w.write(0, 12)       // operating_point_idc[0]
+        w.write(13, 5)       // seq_level_idx[0]
+        w.write(0, 1)        // seq_tier[0] (level > 7)
+        w.write(11, 4)       // frame_width_bits_minus_1
+        w.write(10, 4)       // frame_height_bits_minus_1
+        w.write(2559, 12)    // max_frame_width_minus_1
+        w.write(1439, 11)    // max_frame_height_minus_1
+        w.write(0, 1)        // frame_id_numbers_present_flag
+        w.write(0, 1)        // use_128x128_superblock
+        w.write(1, 1)        // enable_filter_intra
+        w.write(1, 1)        // enable_intra_edge_filter
+        w.write(0, 1)        // enable_interintra_compound
+        w.write(0, 1)        // enable_masked_compound
+        w.write(0, 1)        // enable_warped_motion
+        w.write(0, 1)        // enable_dual_filter
+        w.write(1, 1)        // enable_order_hint
+        w.write(0, 1)        // enable_jnt_comp
+        w.write(0, 1)        // enable_ref_frame_mvs
+        w.write(1, 1)        // seq_choose_screen_content_tools
+        w.write(1, 1)        // seq_choose_integer_mv
+        w.write(6, 3)        // order_hint_bits_minus_1
+        w.write(0, 1)        // enable_superres
+        w.write(1, 1)        // enable_cdef
+        w.write(1, 1)        // enable_restoration
+        w.write(1, 1)        // high_bitdepth
+        w.write(0, 1)        // mono_chrome
+        w.write(1, 1)        // color_description_present_flag
+        w.write(9, 8)        // color_primaries: BT.2020
+        w.write(16, 8)       // transfer_characteristics: PQ
+        w.write(9, 8)        // matrix_coefficients: BT.2020 NCL
+        w.write(0, 1)        // color_range: limited
+        w.write(0, 2)        // chroma_sample_position
+        w.write(0, 1)        // separate_uv_delta_q
+        w.write(1, 1)        // trailing_one_bit
+        let payload = w.bytes
+        return [0x0A, UInt8(payload.count)] + payload  // OBU_SEQUENCE_HEADER with size field
+    }
+
+    func testSequenceHeaderAndAv1C() throws {
+        let sequenceHeader = sequenceHeaderOBU()
+        let temporalUnit: [UInt8] = [0x12, 0x00] + sequenceHeader + [0x32, 0x03, 0xAA, 0xBB, 0xCC]
+
+        var info = TwAV1Info()
+        var config = [UInt8](repeating: 0, count: 256)
+        let length = TwAV1ParseSequenceHeader(temporalUnit, temporalUnit.count, &info, &config, config.count)
+        XCTAssertEqual(Int(length), 4 + sequenceHeader.count)
+        XCTAssertEqual(info.width, 2560)
+        XCTAssertEqual(info.height, 1440)
+        XCTAssertEqual(info.bitDepth, 10)
+        XCTAssertEqual(info.colorPrimaries, 9)
+        XCTAssertEqual(info.transferCharacteristics, 16)
+        XCTAssertEqual(info.matrixCoefficients, 9)
+        XCTAssertFalse(info.fullRange)
+
+        // marker/version, profile 0 + level 13, 10-bit 4:2:0, no presentation delay, then the OBU
+        XCTAssertEqual(Array(config[0..<4]), [0x81, 0x0D, 0x4C, 0x00])
+        XCTAssertEqual(Array(config[4..<Int(length)]), sequenceHeader)
+
+        // Temporal delimiter removed, everything else kept byte for byte
+        let strippedLength = TwAV1StripTemporalDelimiters(temporalUnit, temporalUnit.count, nil)
+        var stripped = [UInt8](repeating: 0, count: strippedLength)
+        XCTAssertEqual(TwAV1StripTemporalDelimiters(temporalUnit, temporalUnit.count, &stripped), strippedLength)
+        XCTAssertEqual(stripped, sequenceHeader + [0x32, 0x03, 0xAA, 0xBB, 0xCC])
+
+        // The format description VideoToolbox will decode with, including HDR colour tags
+        let description = try XCTUnwrap(VideoRenderer.makeAV1FormatDescription(config: Data(config[0..<Int(length)]), info: info))
+        XCTAssertEqual(CMFormatDescriptionGetMediaSubType(description), kCMVideoCodecType_AV1)
+        XCTAssertEqual(CMVideoFormatDescriptionGetDimensions(description).width, 2560)
+        XCTAssertTrue(VideoRenderer.isHDR(description))
+        XCTAssertEqual(VideoRenderer.describeColor(description), "10-bit · BT.2020 · PQ (HDR) · limited range")
+    }
+
+    func testNoSequenceHeaderAndMalformedData() {
+        var info = TwAV1Info()
+        var config = [UInt8](repeating: 0, count: 64)
+        // A temporal delimiter and a frame OBU, but no sequence header (an ordinary inter frame)
+        let interFrame: [UInt8] = [0x12, 0x00, 0x32, 0x02, 0x01, 0x02]
+        XCTAssertEqual(TwAV1ParseSequenceHeader(interFrame, interFrame.count, &info, &config, config.count), 0)
+        // An OBU claiming more payload than there is
+        let truncated: [UInt8] = [0x0A, 0x40, 0x00]
+        XCTAssertEqual(TwAV1ParseSequenceHeader(truncated, truncated.count, &info, &config, config.count), -1)
+        // A sequence header too big for the output buffer
+        let header = sequenceHeaderOBU()
+        XCTAssertEqual(TwAV1ParseSequenceHeader(header, header.count, &info, &config, 8), -1)
     }
 }

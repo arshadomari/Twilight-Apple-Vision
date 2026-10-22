@@ -31,6 +31,8 @@ public final class VideoRenderer: @unchecked Sendable {
     private var vps: Data?
     private var sps: Data?
     private var pps: Data?
+    /// The current AV1 'av1C' record, built from the stream's sequence header.
+    private var av1Config: Data?
     /// Reusable buffer the picture data of each frame is gathered into (Annex-B).
     private var frameBuffer = UnsafeMutableRawPointer.allocate(byteCount: 1 << 20, alignment: 16)
     private var frameCapacity = 1 << 20
@@ -94,7 +96,8 @@ public final class VideoRenderer: @unchecked Sendable {
         stats.codec = Self.codecName(videoFormat)
         statsLock.unlock()
 
-        guard videoFormat & Int32(VIDEO_FORMAT_MASK_H264 | VIDEO_FORMAT_MASK_H265) != 0 else {
+        av1Config = nil
+        guard videoFormat & Int32(VIDEO_FORMAT_MASK_H264 | VIDEO_FORMAT_MASK_H265 | VIDEO_FORMAT_MASK_AV1) != 0 else {
             TwilightLog.error("Unsupported video format \(videoFormat)")
             return -1
         }
@@ -114,6 +117,7 @@ public final class VideoRenderer: @unchecked Sendable {
         let started = CACurrentMediaTime()
         let du = unit.pointee
         let isHevc = videoFormat & Int32(VIDEO_FORMAT_MASK_H265) != 0
+        let isAV1 = videoFormat & Int32(VIDEO_FORMAT_MASK_AV1) != 0
 
         frameLength = 0
         var entry = du.bufferList
@@ -138,16 +142,20 @@ public final class VideoRenderer: @unchecked Sendable {
             entry = e.pointee.next
         }
 
-        if du.frameType == Int32(FRAME_TYPE_IDR) && (parameterSetsChanged || formatDescription == nil) {
-            formatDescription = makeFormatDescription(hevc: isHevc)
-            if let formatDescription {
-                let description = Self.describeColor(formatDescription)
-                statsLock.lock()
-                stats.colorDescription = description
-                statsLock.unlock()
-                TwilightLog.info("Video colour: \(description)")
-                setDynamicRange(hdr: Self.isHDR(formatDescription))
+        if isAV1 {
+            // AV1 has no separate parameter sets; the sequence header travels in keyframes
+            if du.frameType == Int32(FRAME_TYPE_IDR) || formatDescription == nil,
+               let (config, info) = parseAV1SequenceHeader(),
+               config != av1Config || formatDescription == nil {
+                av1Config = config
+                installFormatDescription(Self.makeAV1FormatDescription(config: config, info: info))
+                if formatDescription == nil {
+                    TwilightLog.error("Unable to create AV1 format description")
+                    return Int32(DR_NEED_IDR)
+                }
             }
+        } else if du.frameType == Int32(FRAME_TYPE_IDR) && (parameterSetsChanged || formatDescription == nil) {
+            installFormatDescription(makeFormatDescription(hevc: isHevc))
             if formatDescription == nil {
                 TwilightLog.error("Unable to create video format description")
                 return Int32(DR_NEED_IDR)
@@ -159,7 +167,8 @@ public final class VideoRenderer: @unchecked Sendable {
             return Int32(DR_NEED_IDR)
         }
 
-        guard let sampleBuffer = makeSampleBuffer(formatDescription: formatDescription, presentationTimeUs: du.presentationTimeUs) else {
+        guard let sampleBuffer = makeSampleBuffer(formatDescription: formatDescription, presentationTimeUs: du.presentationTimeUs,
+                                                  convert: isAV1 ? TwAV1StripTemporalDelimiters : TwAnnexBToLengthPrefixed) else {
             return Int32(DR_NEED_IDR)
         }
 
@@ -177,6 +186,53 @@ public final class VideoRenderer: @unchecked Sendable {
     }
 
     // MARK: Helpers
+
+    private func installFormatDescription(_ description: CMVideoFormatDescription?) {
+        formatDescription = description
+        guard let description else { return }
+        let summary = Self.describeColor(description)
+        statsLock.lock()
+        stats.colorDescription = summary
+        statsLock.unlock()
+        TwilightLog.info("Video colour: \(summary)")
+        setDynamicRange(hdr: Self.isHDR(description))
+    }
+
+    /// Reads the sequence header from the AV1 temporal unit in `frameBuffer`, if it has one.
+    private func parseAV1SequenceHeader() -> (Data, TwAV1Info)? {
+        var info = TwAV1Info()
+        var config = [UInt8](repeating: 0, count: 1024)
+        let length = TwAV1ParseSequenceHeader(UnsafeRawPointer(frameBuffer).assumingMemoryBound(to: UInt8.self),
+                                              frameLength, &info, &config, config.count)
+        if length < 0 {
+            TwilightLog.error("Malformed AV1 sequence header")
+        }
+        guard length > 0 else { return nil }
+        return (Data(config[0..<Int(length)]), info)
+    }
+
+    static func makeAV1FormatDescription(config: Data, info: TwAV1Info) -> CMVideoFormatDescription? {
+        var extensions: [CFString: Any] = [
+            kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms: ["av1C": config] as CFDictionary,
+            kCMFormatDescriptionExtension_FullRangeVideo: info.fullRange,
+            kCMFormatDescriptionExtension_BitsPerComponent: info.bitDepth,
+        ]
+        // AV1 uses the same ITU-T H.273 code points as VideoToolbox's colour tags
+        if let primaries = CVColorPrimariesGetStringForIntegerCodePoint(Int32(info.colorPrimaries))?.takeUnretainedValue() {
+            extensions[kCMFormatDescriptionExtension_ColorPrimaries] = primaries
+        }
+        if let transfer = CVTransferFunctionGetStringForIntegerCodePoint(Int32(info.transferCharacteristics))?.takeUnretainedValue() {
+            extensions[kCMFormatDescriptionExtension_TransferFunction] = transfer
+        }
+        if let matrix = CVYCbCrMatrixGetStringForIntegerCodePoint(Int32(info.matrixCoefficients))?.takeUnretainedValue() {
+            extensions[kCMFormatDescriptionExtension_YCbCrMatrix] = matrix
+        }
+        var description: CMVideoFormatDescription?
+        let status = CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_AV1,
+                                                    width: Int32(info.width), height: Int32(info.height),
+                                                    extensions: extensions as CFDictionary, formatDescriptionOut: &description)
+        return status == noErr ? description : nil
+    }
 
     private func makeFormatDescription(hevc: Bool) -> CMVideoFormatDescription? {
         var description: CMVideoFormatDescription?
@@ -202,11 +258,13 @@ public final class VideoRenderer: @unchecked Sendable {
         return description
     }
 
-    /// Converts the Annex-B frame in `frameBuffer` to 4-byte length-prefixed NAL units, written
-    /// straight into the CMBlockBuffer the decoder reads (one copy, done in C).
-    private func makeSampleBuffer(formatDescription: CMVideoFormatDescription, presentationTimeUs: UInt64) -> CMSampleBuffer? {
+    /// Converts the frame in `frameBuffer` to the decoder's sample format, written straight into the
+    /// CMBlockBuffer the decoder reads (one copy, done in C): length-prefixed NAL units for
+    /// H.264/HEVC, or the temporal unit without temporal delimiters for AV1.
+    private func makeSampleBuffer(formatDescription: CMVideoFormatDescription, presentationTimeUs: UInt64,
+                                  convert: (UnsafePointer<UInt8>, Int, UnsafeMutablePointer<UInt8>?) -> Int) -> CMSampleBuffer? {
         let input = UnsafeRawPointer(frameBuffer).assumingMemoryBound(to: UInt8.self)
-        let outputLength = TwAnnexBToLengthPrefixed(input, frameLength, nil)
+        let outputLength = convert(input, frameLength, nil)
         guard outputLength > 0 else { return nil }
 
         var blockBuffer: CMBlockBuffer?
@@ -220,7 +278,7 @@ public final class VideoRenderer: @unchecked Sendable {
                                           dataPointerOut: &destination) == noErr,
               let destination else { return nil }
         let written = destination.withMemoryRebound(to: UInt8.self, capacity: outputLength) {
-            TwAnnexBToLengthPrefixed(input, frameLength, $0)
+            convert(input, frameLength, $0)
         }
         guard written == outputLength else { return nil }
 
@@ -334,6 +392,9 @@ public final class VideoRenderer: @unchecked Sendable {
     }
 
     static func codecName(_ format: Int32) -> String {
+        if format & Int32(VIDEO_FORMAT_MASK_AV1) != 0 {
+            return format & Int32(VIDEO_FORMAT_MASK_10BIT) != 0 ? "AV1 Main10" : "AV1"
+        }
         if format & Int32(VIDEO_FORMAT_MASK_H265) != 0 {
             return format & Int32(VIDEO_FORMAT_MASK_10BIT) != 0 ? "HEVC Main10 (HDR)" : "HEVC"
         }

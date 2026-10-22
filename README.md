@@ -9,7 +9,7 @@ Twilight's Qt/QML shell and macOS-only pieces (IOKit, CoreHID, MoltenVK, Game Mo
 | moonlight-common-c (Andy Grundman's fork)  | Same commit (`Vendor/moonlight-common-c`), built from source |
 | OpenSSL                                    | mbedTLS 3.6 (PSA crypto)                                     |
 | NvPairingManager / IdentityManager / NvHTTP | `Pairing.swift`, `ClientIdentity.swift`, `GameStreamHTTP.swift` |
-| Metal / VideoToolbox decoder               | VideoToolbox through `AVSampleBufferDisplayLayer`            |
+| Metal / VideoToolbox decoder               | VideoToolbox through `AVSampleBufferDisplayLayer` (H.264, HEVC, AV1) |
 | Core Audio spatial mixer                   | libopus + AVAudioEngine; visionOS spatial audio (anchored, follow head, off) |
 | SDL game controllers                       | GameController framework, with rumble via Core Haptics       |
 | Hosts sidebar + game library shell         | SwiftUI `NavigationSplitView`, box art grid                 |
@@ -23,7 +23,9 @@ The stream window opens in place of the library window (`pushWindow`), so it app
 
 The PC can't stream more frames per second than its display refresh rate. For 90 fps (Vision Pro's display rate), set the host display to 90 Hz or use Apollo/Vibepollo's virtual display.
 
-Not ported yet: AV1 (needs `av1C` construction), PyroWave, microphone forwarding, adaptive bitrate, Wake-on-LAN, HDR metadata passthrough.
+AV1 is available as a codec choice on Vision Pro models with a hardware AV1 decoder (M5). The app builds the `av1C` record from the stream's sequence header (`Sources/TwilightKitC/TwAV1.c`); if the host's GPU can't encode AV1, the stream falls back to HEVC.
+
+Not ported yet: PyroWave, microphone forwarding, adaptive bitrate, Wake-on-LAN, HDR metadata passthrough.
 
 The stream libraries (mbedTLS, libopus, moonlight-common-c) and TwilightKit are always compiled with optimisation, even in Debug builds, because they run per packet. The shared `Twilight` scheme runs the Release configuration without the debugger attached.
 

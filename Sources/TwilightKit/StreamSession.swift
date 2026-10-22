@@ -193,12 +193,20 @@ public final class StreamSession {
         switch settings.codec {
         case .h264:
             formats = Int32(VIDEO_FORMAT_H264)
-        case .hevc, .automatic:
+        case .hevc, .automatic, .av1:
             formats = Int32(VIDEO_FORMAT_H264)
             if hevcHardware {
                 formats |= Int32(VIDEO_FORMAT_H265)
                 if settings.enableHdr {
                     formats |= Int32(VIDEO_FORMAT_H265_MAIN10)
+                }
+            }
+            // The host picks AV1 over HEVC when both sides offer it, and falls back to HEVC
+            // (then H.264) if its GPU can't encode AV1.
+            if settings.codec == .av1 && VideoCodecPreference.av1Available {
+                formats |= Int32(VIDEO_FORMAT_AV1_MAIN8)
+                if settings.enableHdr {
+                    formats |= Int32(VIDEO_FORMAT_AV1_MAIN10)
                 }
             }
         }

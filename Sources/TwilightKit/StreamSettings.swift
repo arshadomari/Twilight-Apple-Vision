@@ -1,15 +1,22 @@
 import Foundation
 import TwilightKitC
+import VideoToolbox
 
 public enum VideoCodecPreference: String, Codable, CaseIterable, Identifiable, Sendable {
-    case automatic, h264, hevc
+    case automatic, h264, hevc, av1
     public var id: String { rawValue }
     public var label: String {
         switch self {
         case .automatic: return "Automatic"
         case .h264: return "H.264"
         case .hevc: return "HEVC"
+        case .av1: return "AV1"
         }
+    }
+
+    /// AV1 needs a hardware decoder (M5 Vision Pro and later; not M2).
+    public static var av1Available: Bool {
+        VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
     }
 }
 
