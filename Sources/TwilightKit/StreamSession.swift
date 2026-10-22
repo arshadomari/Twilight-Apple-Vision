@@ -47,6 +47,11 @@ public final class StreamSession {
     let http: GameStreamHTTP
 
     private var audio: AudioRenderer?
+
+    /// The stream's audio volume (0...1), adjustable while streaming.
+    public var volume: Double {
+        didSet { audio?.setVolume(Float(volume)) }
+    }
     private var cStrings: [UnsafeMutablePointer<CChar>] = []
     private var statsTimer: Timer?
     private var stopping = false
@@ -56,6 +61,7 @@ public final class StreamSession {
         self.appId = appId
         self.appName = appName
         self.settings = settings
+        self.volume = settings.streamVolume
     }
 
     // MARK: Lifecycle
@@ -156,7 +162,7 @@ public final class StreamSession {
         }
         serverInfo.serverCodecModeSupport = info.serverCodecModeSupport
 
-        let audio = AudioRenderer(spatialMode: settings.spatialAudio)
+        let audio = AudioRenderer(spatialMode: settings.spatialAudio, volume: Float(volume))
         self.audio = audio
         StreamCallbacks.install(session: self, video: video, audio: audio, input: input)
 

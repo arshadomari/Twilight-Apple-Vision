@@ -40,6 +40,8 @@ private struct StreamContent: View {
     @State private var showStats: Bool
     @State private var mouseDown = false
     @State private var trackpad = TrackpadState()
+    @State private var volumeBeforeMute: Double?
+    @Environment(AppModel.self) private var model
 
     init(session: StreamSession, settings: StreamSettings, end: @escaping (Bool) -> Void) {
         self.session = session
@@ -250,6 +252,15 @@ private struct StreamContent: View {
         return "Starting \(session.appName)"
     }
 
+    private var volumeSymbol: String {
+        switch session.volume {
+        case 0: return "speaker.slash.fill"
+        case ..<0.34: return "speaker.wave.1.fill"
+        case ..<0.67: return "speaker.wave.2.fill"
+        default: return "speaker.wave.3.fill"
+        }
+    }
+
     private var controls: some View {
         HStack(spacing: 12) {
             Button("End Stream", systemImage: "xmark") { end(false) }
@@ -274,6 +285,26 @@ private struct StreamContent: View {
                 Label("Stats", systemImage: "chart.bar.xaxis")
             }
             .toggleStyle(.button)
+
+            Divider().frame(height: 32)
+
+            Button(session.volume == 0 ? "Unmute" : "Mute", systemImage: volumeSymbol) {
+                if session.volume == 0 {
+                    session.volume = volumeBeforeMute ?? 1
+                    volumeBeforeMute = nil
+                } else {
+                    volumeBeforeMute = session.volume
+                    session.volume = 0
+                }
+                model.settings.streamVolume = session.volume
+            }
+            .help("Mute or unmute the stream. Other apps aren't affected.")
+            Slider(value: Binding(get: { session.volume }, set: { session.volume = $0 }), in: 0...1) { editing in
+                // Save once the drag ends rather than on every step
+                if !editing { model.settings.streamVolume = session.volume }
+            }
+            .frame(width: 180)
+            .accessibilityLabel("Stream Volume")
 
             if showKeyboard {
                 KeyboardField(input: session.input)

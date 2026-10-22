@@ -16,9 +16,20 @@ public final class AudioRenderer: @unchecked Sendable {
     private var engine: AVAudioEngine?
     private var ring: FloatRingBuffer?
     private let spatialMode: SpatialAudioMode
+    private let volumeLock = NSLock()
+    private var volume: Float
 
-    public init(spatialMode: SpatialAudioMode) {
+    public init(spatialMode: SpatialAudioMode, volume: Float = 1) {
         self.spatialMode = spatialMode
+        self.volume = volume
+    }
+
+    /// Sets the stream's own volume (0...1). Other apps and the system volume are unaffected.
+    public func setVolume(_ newValue: Float) {
+        volumeLock.lock()
+        volume = max(0, min(1, newValue))
+        engine?.mainMixerNode.outputVolume = volume
+        volumeLock.unlock()
     }
 
     // MARK: Audio callbacks
@@ -98,7 +109,8 @@ public final class AudioRenderer: @unchecked Sendable {
     private func startEngine(sampleRate: Double) throws {
         #if os(iOS) || os(visionOS)
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .moviePlayback, options: [])
+        // Mix with other apps' audio instead of silencing them
+        try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
         try? session.setPreferredSampleRate(sampleRate)
         try? session.setPreferredIOBufferDuration(0.005)
         if session.maximumOutputNumberOfChannels >= channelCount {
@@ -144,7 +156,10 @@ public final class AudioRenderer: @unchecked Sendable {
         }
         engine.prepare()
         try engine.start()
+        volumeLock.lock()
+        engine.mainMixerNode.outputVolume = volume
         self.engine = engine
+        volumeLock.unlock()
     }
 }
 

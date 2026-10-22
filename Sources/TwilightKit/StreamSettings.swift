@@ -105,6 +105,8 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var dimSurroundings = true
     public var pointerMode: PointerMode = .trackpad
     public var pointerSpeed: Double = 1.5
+    /// Volume of the stream's own audio, 0...1. Doesn't affect other apps or the system volume.
+    public var streamVolume: Double = 1.0
 
     public init() {}
 
@@ -127,6 +129,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         dimSurroundings = try c.decodeIfPresent(Bool.self, forKey: .dimSurroundings) ?? d.dimSurroundings
         pointerMode = (try? c.decodeIfPresent(PointerMode.self, forKey: .pointerMode)) ?? d.pointerMode
         pointerSpeed = try c.decodeIfPresent(Double.self, forKey: .pointerSpeed) ?? d.pointerSpeed
+        streamVolume = try c.decodeIfPresent(Double.self, forKey: .streamVolume) ?? d.streamVolume
     }
 
     public static let resolutions: [(String, Int, Int)] = [
