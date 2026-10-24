@@ -17,6 +17,9 @@ public struct StreamStats: Sendable {
     public var frameProcessingMs: Double = 0
     /// Colour details from the stream itself, e.g. "10-bit · BT.2020 · PQ (HDR)".
     public var colorDescription: String = ""
+    /// Frame pacing target (0 = off) and how many frames were waiting at the last sample.
+    public var pacingDepth: Int = 0
+    public var pacingBuffered: Int = 0
     public var width: Int = 0
     public var height: Int = 0
 }
@@ -31,6 +34,10 @@ public final class VideoRenderer: @unchecked Sendable {
     private var vps: Data?
     private var sps: Data?
     private var pps: Data?
+    /// Frames to buffer for smoothing (0 = show each frame as soon as it arrives). Set before streaming.
+    public var pacingDepth = 0
+    private var pacer: FramePacer?
+
     /// The current AV1 'av1C' record, built from the stream's sequence header.
     private var av1Config: Data?
     /// Reusable buffer the picture data of each frame is gathered into (Annex-B).
@@ -94,7 +101,18 @@ public final class VideoRenderer: @unchecked Sendable {
         stats.width = Int(width)
         stats.height = Int(height)
         stats.codec = Self.codecName(videoFormat)
+        stats.pacingDepth = pacingDepth
         statsLock.unlock()
+
+        pacer?.stop()
+        pacer = nil
+        if pacingDepth > 0 {
+            let renderer = displayLayer.sampleBufferRenderer
+            let pacer = FramePacer(depth: pacingDepth, fps: Int(fps)) { renderer.enqueue($0) }
+            pacer.start()
+            self.pacer = pacer
+            TwilightLog.info("Frame pacing on: \(pacingDepth) frame(s) at \(fps) fps")
+        }
 
         av1Config = nil
         guard videoFormat & Int32(VIDEO_FORMAT_MASK_H264 | VIDEO_FORMAT_MASK_H265 | VIDEO_FORMAT_MASK_AV1) != 0 else {
@@ -108,6 +126,8 @@ public final class VideoRenderer: @unchecked Sendable {
     }
 
     func cleanup() {
+        pacer?.stop()
+        pacer = nil
         DispatchQueue.main.async { [displayLayer] in
             displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
         }
@@ -176,10 +196,15 @@ public final class VideoRenderer: @unchecked Sendable {
         if renderer.status == .failed {
             TwilightLog.error("Video renderer failed: \(String(describing: renderer.error)); requesting IDR")
             renderer.flush()
+            pacer?.flush()
             self.formatDescription = nil
             return Int32(DR_NEED_IDR)
         }
-        renderer.enqueue(sampleBuffer)
+        if let pacer {
+            pacer.enqueue(sampleBuffer)
+        } else {
+            renderer.enqueue(sampleBuffer)
+        }
 
         recordFrame(du, processingTime: CACurrentMediaTime() - started)
         return Int32(DR_OK)
@@ -325,6 +350,7 @@ public final class VideoRenderer: @unchecked Sendable {
             stats.receivedFps = Double(windowFrames) / elapsed
             stats.bitrateMbps = Double(windowBytes) * 8 / elapsed / 1_000_000
             stats.droppedFrames = droppedFrames
+            stats.pacingBuffered = pacer?.bufferedCount ?? 0
             stats.frameProcessingMs = windowFrames > 0 ? windowProcessingTime / Double(windowFrames) * 1000 : 0
             stats.hostLatencyMs = windowHostLatencySamples > 0 ? windowHostLatency / Double(windowHostLatencySamples) : 0
             var rtt: UInt32 = 0, variance: UInt32 = 0

@@ -339,6 +339,9 @@ private struct StatsHUD: View {
             Text(String(format: "%.0f FPS · %.1f Mbps", stats.receivedFps, stats.bitrateMbps))
             Text("Network \(stats.rttMs) ms ± \(stats.rttVarianceMs) · Host \(String(format: "%.1f", stats.hostLatencyMs)) ms")
             Text("Dropped frames: \(stats.droppedFrames) · Client \(String(format: "%.2f", stats.frameProcessingMs)) ms/frame")
+            if stats.pacingDepth > 0 {
+                Text("Frame pacing: \(stats.pacingBuffered) buffered (target \(stats.pacingDepth))")
+            }
             if poor {
                 Text("Poor connection").foregroundStyle(.yellow)
             }

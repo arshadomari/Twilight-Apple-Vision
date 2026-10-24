@@ -62,6 +62,7 @@ public final class StreamSession {
         self.appName = appName
         self.settings = settings
         self.volume = settings.streamVolume
+        video.pacingDepth = settings.framePacing.frames
     }
 
     // MARK: Lifecycle

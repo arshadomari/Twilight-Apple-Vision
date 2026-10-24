@@ -95,6 +95,30 @@ public enum PointerMode: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// How many frames to buffer to smooth out network stalls (like Twilight's frame pacing option).
+public enum FramePacing: String, Codable, CaseIterable, Identifiable, Sendable {
+    case off, low, medium, high
+    public var id: String { rawValue }
+
+    public var frames: Int {
+        switch self {
+        case .off: return 0
+        case .low: return 1
+        case .medium: return 2
+        case .high: return 4
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .off: return "Off"
+        case .low: return "Low (1 frame)"
+        case .medium: return "Medium (2 frames)"
+        case .high: return "High (4 frames)"
+        }
+    }
+}
+
 public struct StreamSettings: Codable, Equatable, Sendable {
     public var width = 1920
     public var height = 1080
@@ -114,6 +138,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
     public var pointerSpeed: Double = 1.5
     /// Volume of the stream's own audio, 0...1. Doesn't affect other apps or the system volume.
     public var streamVolume: Double = 1.0
+    public var framePacing: FramePacing = .off
 
     public init() {}
 
@@ -137,6 +162,7 @@ public struct StreamSettings: Codable, Equatable, Sendable {
         pointerMode = (try? c.decodeIfPresent(PointerMode.self, forKey: .pointerMode)) ?? d.pointerMode
         pointerSpeed = try c.decodeIfPresent(Double.self, forKey: .pointerSpeed) ?? d.pointerSpeed
         streamVolume = try c.decodeIfPresent(Double.self, forKey: .streamVolume) ?? d.streamVolume
+        framePacing = (try? c.decodeIfPresent(FramePacing.self, forKey: .framePacing)) ?? d.framePacing
     }
 
     public static let resolutions: [(String, Int, Int)] = [

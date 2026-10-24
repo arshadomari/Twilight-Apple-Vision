@@ -40,6 +40,14 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                     Toggle("HDR (10-bit)", isOn: $model.settings.enableHdr)
+                    Picker("Frame Pacing", selection: $model.settings.framePacing) {
+                        ForEach(FramePacing.allCases) { Text($0.label).tag($0) }
+                    }
+                    Text(model.settings.framePacing == .off
+                         ? "Frames are shown the moment they arrive, for the lowest latency."
+                         : "Buffers frames to smooth out Wi-Fi stalls (such as AWDL). Each frame adds about \(Int((1000.0 / Double(model.settings.fps)).rounded())) ms of latency at \(model.settings.fps) FPS.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {

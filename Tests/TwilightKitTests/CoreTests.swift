@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import CoreMedia
 import TwilightKitC
 @testable import TwilightKit
@@ -154,11 +155,12 @@ final class HTTPTests: XCTestCase {
     }
 
     func testServerInfoRetriesThenFails() async {
-        // Nothing listens on this port, so every attempt fails fast with a transient error
-        let http = GameStreamHTTP(address: "127.0.0.1", httpPort: 9)
+        // 192.0.2.1 is reserved for documentation (TEST-NET-1) and never answers, so every
+        // attempt times out: three attempts at half a second each
+        let http = GameStreamHTTP(address: "192.0.2.1", httpPort: 47989)
         let start = Date()
         do {
-            _ = try await http.serverInfo(timeout: 2, retries: 2)
+            _ = try await http.serverInfo(timeout: 0.5, retries: 2)
             XCTFail("Expected failure")
         } catch {
             XCTAssertTrue(GameStreamHTTP.isTransient(error), "\(error)")
@@ -274,5 +276,60 @@ final class AV1Tests: XCTestCase {
         // A sequence header too big for the output buffer
         let header = sequenceHeaderOBU()
         XCTAssertEqual(TwAV1ParseSequenceHeader(header, header.count, &info, &config, 8), -1)
+    }
+}
+
+final class FramePacerTests: XCTestCase {
+    private func frame() -> CMSampleBuffer {
+        var buffer: CMSampleBuffer?
+        CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: true, makeDataReadyCallback: nil,
+                             refcon: nil, formatDescription: nil, sampleCount: 0, sampleTimingEntryCount: 0,
+                             sampleTimingArray: nil, sampleSizeEntryCount: 0, sampleSizeArray: nil, sampleBufferOut: &buffer)
+        return buffer!
+    }
+
+    private let interval = 1.0 / 90
+
+    func testPrimesThenReleasesOnePerFrame() {
+        let pacer = FramePacer(depth: 2, fps: 90) { _ in }
+        pacer.enqueue(frame())
+        XCTAssertEqual(pacer.step(now: 0), 0, "waits until the buffer holds its target depth")
+        pacer.enqueue(frame())
+        XCTAssertEqual(pacer.step(now: 0.001), 1)
+        pacer.enqueue(frame())
+        XCTAssertEqual(pacer.step(now: 0.001 + interval / 2), 0, "nothing before the next frame is due")
+        XCTAssertEqual(pacer.step(now: 0.001 + interval), 1)
+        XCTAssertEqual(pacer.bufferedCount, 1)
+    }
+
+    func testRefillsAfterUnderrun() {
+        let pacer = FramePacer(depth: 2, fps: 90) { _ in }
+        pacer.enqueue(frame())
+        pacer.enqueue(frame())
+        XCTAssertEqual(pacer.step(now: 0), 1)
+        XCTAssertEqual(pacer.step(now: interval), 1)
+        // A stall: nothing arrives, so the queue runs dry
+        XCTAssertEqual(pacer.step(now: interval * 2), 0)
+        pacer.enqueue(frame())
+        XCTAssertEqual(pacer.step(now: interval * 3), 0, "refills to the target before resuming")
+        pacer.enqueue(frame())
+        XCTAssertEqual(pacer.step(now: interval * 3.5), 1)
+    }
+
+    func testCatchesUpAfterBurst() {
+        let pacer = FramePacer(depth: 1, fps: 90) { _ in }
+        for _ in 0..<4 { pacer.enqueue(frame()) }
+        XCTAssertEqual(pacer.step(now: 0), 2, "well past target: release two")
+        XCTAssertEqual(pacer.step(now: interval), 1, "back near target: one per frame")
+        XCTAssertEqual(pacer.bufferedCount, 1)
+    }
+
+    func testFlushDropsQueuedFrames() {
+        let pacer = FramePacer(depth: 1, fps: 90) { _ in }
+        pacer.enqueue(frame())
+        pacer.enqueue(frame())
+        pacer.flush()
+        XCTAssertEqual(pacer.bufferedCount, 0)
+        XCTAssertEqual(pacer.step(now: 0), 0)
     }
 }
