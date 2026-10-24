@@ -37,6 +37,7 @@ private struct StreamContent: View {
 
     @State private var rightClickMode = false
     @State private var showKeyboard = false
+    @State private var showSystemKeyboard = false
     @State private var showStats: Bool
     @State private var mouseDown = false
     @State private var trackpad = TrackpadState()
@@ -262,6 +263,15 @@ private struct StreamContent: View {
     }
 
     private var controls: some View {
+        VStack(spacing: 12) {
+            controlBar
+            if showKeyboard {
+                VirtualKeyboard(input: session.input, showSystemKeyboard: $showSystemKeyboard)
+            }
+        }
+    }
+
+    private var controlBar: some View {
         HStack(spacing: 12) {
             Button("End Stream", systemImage: "xmark") { end(false) }
                 .help("Disconnect. The game keeps running on the host.")
@@ -306,7 +316,7 @@ private struct StreamContent: View {
             .frame(width: 180)
             .accessibilityLabel("Stream Volume")
 
-            if showKeyboard {
+            if showKeyboard && showSystemKeyboard {
                 KeyboardField(input: session.input)
             }
         }
